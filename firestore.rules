@@ -1,0 +1,76 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    // users/{userId}
+    match /users/{userId} {
+      allow read, create, update: if isOwner(userId);
+      allow delete: if false;
+
+      // users/{userId}/saved_cards/{cardId}
+      match /saved_cards/{cardId} {
+        allow read, create, update, delete: if isOwner(userId);
+      }
+
+      // users/{userId}/notifications/{notificationId}
+      match /notifications/{notificationId} {
+        allow read, create, update, delete: if isOwner(userId);
+      }
+    }
+
+    // sessions/{sessionId}
+    match /sessions/{sessionId} {
+      allow read: if isSignedIn() && resource.data.userId == request.auth.uid;
+
+      allow create: if isSignedIn()
+        && request.resource.data.userId == request.auth.uid;
+
+      // Owner can update their own session (end session / mark paid),
+      // but can't reassign it to someone else or change the lot it belongs to.
+      allow update: if isSignedIn()
+        && resource.data.userId == request.auth.uid
+        && request.resource.data.userId == resource.data.userId
+        && request.resource.data.lotId == resource.data.lotId;
+
+      allow delete: if false;
+    }
+
+    // parking_lots/{lotId} - seeded/managed outside the client (console or
+    // an admin script). Any signed-in user may read live availability, and
+    // may adjust ONLY the `available` counter (via session start/end), kept
+    // within [0, total] so a buggy/malicious client can't push it negative
+    // or above capacity.
+    match /parking_lots/{lotId} {
+      allow read: if isSignedIn();
+
+      allow update: if isSignedIn()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['available'])
+        && request.resource.data.available is int
+        && request.resource.data.available >= 0
+        && request.resource.data.available <= resource.data.total;
+
+      allow create, delete: if false;
+    }
+
+    // payment_methods/{id} - static reference data (FPX/e-wallet/card
+    // options), managed outside the client.
+    match /payment_methods/{methodId} {
+      allow read: if isSignedIn();
+      allow write: if false;
+    }
+
+    // Deny everything else by default.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
